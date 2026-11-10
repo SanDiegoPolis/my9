@@ -730,7 +730,7 @@ test.describe("v3 interaction", () => {
     await expect(page).toHaveURL(`/${DEFAULT_KIND}`, { timeout: 30_000 });
   });
 
-  test("生成分享图片预览时会通过 wsrv 加载封面", async ({ page }) => {
+  test("生成分享图片预览时会通过站内代理加载 Bangumi 封面", async ({ page }) => {
     await page.goto("/game");
     await fillSlot(page, 1, "zelda");
 
@@ -740,17 +740,17 @@ test.describe("v3 interaction", () => {
     await page.getByRole("button", { name: /^还差 8 .可保存$/ }).click();
     await expect(page).toHaveURL(`/${DEFAULT_KIND}/s/${SHARE_ID}`, { timeout: 30_000 });
 
-    const wsrvRequest = page.waitForRequest((request) =>
-      request.url().includes("https://wsrv.nl/?url=")
+    const coverRequest = page.waitForRequest((request) =>
+      request.resourceType() === "fetch" && new URL(request.url()).pathname === "/api/image/bgm"
     );
 
     await page.getByRole("button", { name: "生成分享图片" }).click();
     await expect(page.getByRole("heading", { name: "生成分享图片" })).toBeVisible();
-    await wsrvRequest;
+    await coverRequest;
     await expect(page.getByAltText("分享图片预览")).toBeVisible({ timeout: 15_000 });
 
     mkdirSync("screenshot", { recursive: true });
-    await page.screenshot({ path: "screenshot/share-image-preview-wsrv.png", fullPage: true });
+    await page.screenshot({ path: "screenshot/share-image-preview-bangumi.png", fullPage: true });
   });
 
   test("只读页仅保留分享链接/分享图片，复制与导图可用", async ({ page }) => {
