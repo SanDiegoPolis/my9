@@ -1247,6 +1247,35 @@ test.describe("v3 interaction", () => {
     expect(Math.abs((sizeInfo?.mediaHeight || 0) - (sizeInfo?.cropHeight || 0))).toBeLessThan(1.5);
   });
 
+  test("自定义模式切换来源会取消旧搜索并可立即搜索新来源", async ({ page }) => {
+    const isStalledSearch = (url: URL) =>
+      url.pathname === "/api/custom/search" && url.searchParams.get("q") === "stalled-bangumi";
+    await page.route(isStalledSearch, () => {
+      // Hold this response until the browser aborts it.
+    });
+    let oldSearchAborted = false;
+    page.on("requestfailed", (request) => {
+      if (isStalledSearch(new URL(request.url()))) oldSearchAborted = true;
+    });
+
+    await page.goto("/custom");
+    await page.getByRole("button", { name: "我知道了" }).click();
+    await page.getByLabel("选择第 1 格作品").click();
+    await page.getByPlaceholder("搜索 Bangumi 条目").fill("stalled-bangumi");
+    const started = page.waitForRequest((request) => isStalledSearch(new URL(request.url())));
+    await page.getByRole("button", { name: "搜索", exact: true }).click();
+    await started;
+    await expect(page.getByText("正在搜索...")).toBeVisible();
+
+    await page.getByRole("button", { name: "TMDB" }).click();
+    await page.getByPlaceholder("搜索 TMDB 条目").fill("tmdb");
+    const search = page.getByRole("button", { name: "搜索", exact: true });
+    await expect(search).toBeEnabled();
+    await search.click();
+    await expect(page.getByRole("button", { name: /搏击俱乐部/ })).toBeVisible();
+    await expect.poll(() => oldSearchAborted).toBe(true);
+  });
+
   test("自定义模式支持单源搜索、上传裁切、本地草稿和直接导图", async ({ page }) => {
     let shareRequestCount = 0;
     page.on("request", (request) => {

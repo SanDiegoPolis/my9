@@ -84,6 +84,7 @@ export default function My9CustomApp() {
   const [searchError, setSearchError] = useState("");
   const [searchResults, setSearchResults] = useState<CustomSearchItem[]>([]);
   const [searchNoResultQuery, setSearchNoResultQuery] = useState<string | null>(null);
+  const searchAbortRef = useRef<AbortController | null>(null);
   const [pendingSelection, setPendingSelection] = useState<CustomPendingSelection | null>(null);
   const [pendingTitle, setPendingTitle] = useState("");
 
@@ -139,6 +140,7 @@ export default function My9CustomApp() {
     hydrateDraft();
     return () => {
       active = false;
+      searchAbortRef.current?.abort();
       if (cropObjectUrlRef.current) {
         URL.revokeObjectURL(cropObjectUrlRef.current);
         cropObjectUrlRef.current = null;
@@ -208,12 +210,19 @@ export default function My9CustomApp() {
     pushToast("info", "已清空当前九宫格");
   }
 
-  function resetSearchState() {
+  function resetSearchResults() {
+    searchAbortRef.current?.abort();
+    searchAbortRef.current = null;
+    setSearchLoading(false);
     setSearchQuery("");
     setSearchCommittedQuery("");
     setSearchError("");
     setSearchResults([]);
     setSearchNoResultQuery(null);
+  }
+
+  function resetSearchState() {
+    resetSearchResults();
     setPendingSelection(null);
     setPendingTitle("");
   }
@@ -234,11 +243,7 @@ export default function My9CustomApp() {
   function openSearch(index: number) {
     const entry = entries[index];
     setSelectedSlot(index);
-    setSearchQuery("");
-    setSearchCommittedQuery("");
-    setSearchError("");
-    setSearchResults([]);
-    setSearchNoResultQuery(null);
+    resetSearchResults();
     if (entry) {
       setSearchTab(entry.source === "upload" ? "upload" : entry.source);
       setPendingSelection(buildPendingSelectionFromEntry(entry));
@@ -266,13 +271,17 @@ export default function My9CustomApp() {
       return;
     }
 
+    searchAbortRef.current?.abort();
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
     setSearchLoading(true);
     setSearchError("");
     setSearchCommittedQuery(trimmedQuery);
 
     try {
       const response = await fetch(
-        `/api/custom/search?q=${encodeURIComponent(trimmedQuery)}&source=${encodeURIComponent(searchTab)}`
+        `/api/custom/search?q=${encodeURIComponent(trimmedQuery)}&source=${encodeURIComponent(searchTab)}`,
+        { signal: controller.signal }
       );
       const json = (await response.json()) as {
         ok?: boolean;
@@ -281,6 +290,7 @@ export default function My9CustomApp() {
         noResultQuery?: string | null;
       };
 
+      if (controller.signal.aborted) return;
       if (!response.ok || !json.ok) {
         setSearchError(json.error || "搜索失败，请稍后重试");
         setSearchResults([]);
@@ -291,21 +301,21 @@ export default function My9CustomApp() {
       setSearchResults(Array.isArray(json.items) ? json.items : []);
       setSearchNoResultQuery(typeof json.noResultQuery === "string" ? json.noResultQuery : null);
     } catch {
+      if (controller.signal.aborted) return;
       setSearchError("搜索失败，请稍后重试");
       setSearchResults([]);
       setSearchNoResultQuery(trimmedQuery);
     } finally {
-      setSearchLoading(false);
+      if (!controller.signal.aborted) {
+        searchAbortRef.current = null;
+        setSearchLoading(false);
+      }
     }
   }
 
   function handleTabChange(nextTab: CustomSearchTab) {
     setSearchTab(nextTab);
-    setSearchQuery("");
-    setSearchCommittedQuery("");
-    setSearchError("");
-    setSearchResults([]);
-    setSearchNoResultQuery(null);
+    resetSearchResults();
   }
 
   function handlePickSearchResult(item: CustomSearchItem) {
