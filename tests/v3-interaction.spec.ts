@@ -274,7 +274,10 @@ async function mockV3Apis(page: Page) {
     });
   });
 
-  await page.route(/https:\/\/wsrv\.nl\/\?url=/, async (route) => {
+  await page.route((url) =>
+    (url.hostname === "wsrv.nl" && url.searchParams.has("url")) ||
+    (url.pathname === "/api/image/bgm" && url.searchParams.has("url")) ||
+    url.href === "https://image.tmdb.org/t/p/w500/custom-tmdb.jpg", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "image/png",
@@ -727,7 +730,7 @@ test.describe("v3 interaction", () => {
     await expect(page).toHaveURL(`/${DEFAULT_KIND}`, { timeout: 30_000 });
   });
 
-  test("生成分享图片预览时会通过 wsrv 加载封面", async ({ page }) => {
+  test("生成分享图片预览时会通过站内代理加载 Bangumi 封面", async ({ page }) => {
     await page.goto("/game");
     await fillSlot(page, 1, "zelda");
 
@@ -737,17 +740,17 @@ test.describe("v3 interaction", () => {
     await page.getByRole("button", { name: /^还差 8 .可保存$/ }).click();
     await expect(page).toHaveURL(`/${DEFAULT_KIND}/s/${SHARE_ID}`, { timeout: 30_000 });
 
-    const wsrvRequest = page.waitForRequest((request) =>
-      request.url().includes("https://wsrv.nl/?url=")
+    const coverRequest = page.waitForRequest((request) =>
+      request.resourceType() === "fetch" && new URL(request.url()).pathname === "/api/image/bgm"
     );
 
     await page.getByRole("button", { name: "生成分享图片" }).click();
     await expect(page.getByRole("heading", { name: "生成分享图片" })).toBeVisible();
-    await wsrvRequest;
+    await coverRequest;
     await expect(page.getByAltText("分享图片预览")).toBeVisible({ timeout: 15_000 });
 
     mkdirSync("screenshot", { recursive: true });
-    await page.screenshot({ path: "screenshot/share-image-preview-wsrv.png", fullPage: true });
+    await page.screenshot({ path: "screenshot/share-image-preview-bangumi.png", fullPage: true });
   });
 
   test("只读页仅保留分享链接/分享图片，复制与导图可用", async ({ page }) => {
@@ -1137,6 +1140,48 @@ test.describe("v3 interaction", () => {
     expect(imageBox).not.toBeNull();
     expect(linkBox).not.toBeNull();
     expect((imageBox?.y || 0) < (linkBox?.y || 0)).toBeTruthy();
+  });
+
+  test("关闭自定义图片预览后丢弃尚未完成的导图", async ({ page }) => {
+    await page.goto("/custom");
+    await page.getByRole("button", { name: "我知道了" }).click();
+    await page.getByLabel("选择第 1 格作品").click();
+    await page.getByPlaceholder("搜索 Bangumi 条目").fill("bgm");
+    await page.getByRole("button", { name: "搜索", exact: true }).click();
+    await page.getByRole("button", { name: /Bangumi 作品/ }).click();
+    await page.getByRole("button", { name: "填入第 1 格" }).click();
+
+    await page.evaluate(() => {
+      const toBlob = HTMLCanvasElement.prototype.toBlob;
+      const createObjectURL = URL.createObjectURL;
+      let pendingPreview: Blob | null = null;
+      URL.createObjectURL = (blob) => {
+        if (blob === pendingPreview) document.body.dataset.closedPreviewPublished = "true";
+        return createObjectURL(blob);
+      };
+      HTMLCanvasElement.prototype.toBlob = function (callback, type, quality) {
+        if (this.width !== 1080 || this.height !== 1660) return toBlob.call(this, callback, type, quality);
+        window.addEventListener("finish-test-preview", () => {
+          toBlob.call(this, (blob) => {
+            pendingPreview = blob;
+            callback(blob);
+            setTimeout(() => { document.body.dataset.previewFinished = "true"; }, 0);
+          }, type, quality);
+        }, { once: true });
+        document.body.dataset.previewPending = "true";
+      };
+    });
+
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "还差 8 部可生成" }).click();
+    const body = page.locator("body");
+    await expect(body).toHaveAttribute("data-preview-pending", "true");
+    const preview = page.getByRole("dialog", { name: "生成图片" });
+    await preview.getByRole("button", { name: "Close" }).click();
+    await expect(preview).toBeHidden();
+    await page.evaluate(() => window.dispatchEvent(new Event("finish-test-preview")));
+    await expect(body).toHaveAttribute("data-preview-finished", "true");
+    await expect(body).not.toHaveAttribute("data-closed-preview-published", "true");
   });
 
   test("自定义模式首次提示只出现一次并可测试保存图片", async ({ page }) => {

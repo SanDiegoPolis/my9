@@ -60,7 +60,6 @@ export function CustomImagePreviewDialog({
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewBlob, setPreviewBlob] = useState<Blob | null>(null);
   const [previewError, setPreviewError] = useState("");
-  const requestIdRef = useRef(0);
   const previewUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -91,7 +90,7 @@ export function CustomImagePreviewDialog({
 
   useEffect(() => {
     if (!open) return;
-    const requestId = ++requestIdRef.current;
+    let cancelled = false;
     const resolvedTitle = title.trim() || defaultTitle;
 
     async function loadPreview() {
@@ -110,16 +109,14 @@ export function CustomImagePreviewDialog({
               showNames,
             });
 
-        if (requestId !== requestIdRef.current) return;
+        if (cancelled) return;
         const nextUrl = URL.createObjectURL(blob);
+        if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+        previewUrlRef.current = nextUrl;
         setPreviewBlob(blob);
-        setPreviewUrl((prev) => {
-          if (prev) URL.revokeObjectURL(prev);
-          previewUrlRef.current = nextUrl;
-          return nextUrl;
-        });
+        setPreviewUrl(nextUrl);
       } catch {
-        if (requestId !== requestIdRef.current) return;
+        if (cancelled) return;
         setPreviewBlob(null);
         setPreviewError("图片生成失败，请稍后重试");
         setPreviewUrl((prev) => {
@@ -128,13 +125,14 @@ export function CustomImagePreviewDialog({
           return null;
         });
       } finally {
-        if (requestId === requestIdRef.current) {
+        if (!cancelled) {
           setLoading(false);
         }
       }
     }
 
     loadPreview();
+    return () => { cancelled = true; };
   }, [defaultTitle, entries, open, showNames, title, withQr]);
 
   async function handleDownload() {
