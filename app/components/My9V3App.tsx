@@ -186,7 +186,7 @@ function toAlbumFromClientResult(result: ItunesClientResult): ShareGame | null {
   };
 }
 
-async function searchItunesInBrowser(query: string, kind: SubjectKind): Promise<SubjectSearchResponse | null> {
+async function searchItunesInBrowser(query: string, kind: SubjectKind, signal: AbortSignal): Promise<SubjectSearchResponse | null> {
   if (kind !== "song" && kind !== "album") return null;
 
   const normalizedQuery = normalizeSearchQuery(query);
@@ -202,6 +202,7 @@ async function searchItunesInBrowser(query: string, kind: SubjectKind): Promise<
   try {
     const response = await fetch(url.toString(), {
       method: "GET",
+      signal,
       headers: {
         Accept: "application/json",
       },
@@ -344,6 +345,7 @@ export default function My9V3App({
   const searchClientCacheRef = useRef<Map<string, SearchClientCacheEntry>>(new Map());
   const searchClientCacheHydratedRef = useRef(false);
   const lastSearchRequestRef = useRef<{ key: string; requestedAt: number } | null>(null);
+  const searchAbortRef = useRef<AbortController | null>(null);
   const [searchMeta, setSearchMeta] = useState<SearchMeta>(
     createSearchMeta()
   );
@@ -370,6 +372,8 @@ export default function My9V3App({
   function persistSearchClientCache() {
     writeSearchClientCacheToSession(searchClientCacheRef.current);
   }
+
+  useEffect(() => () => searchAbortRef.current?.abort(), []);
 
   useEffect(() => {
     if (!toast) return;
@@ -546,7 +550,21 @@ export default function My9V3App({
     pushToast("info", `已清空已选${kindMeta.label}`);
   }
 
+  function resetSearch() {
+    if (searchAbortRef.current) {
+      searchAbortRef.current.abort();
+      searchAbortRef.current = null;
+      lastSearchRequestRef.current = null;
+      setSearchLoading(false);
+    }
+    setSearchResults([]);
+    setSearchCommittedQuery("");
+    setSearchMeta(createSearchMeta());
+    setSearchActiveIndex(-1);
+  }
+
   async function handleSearch() {
+    if (searchAbortRef.current) return;
     const normalizedQuery = normalizeSearchQuery(searchQuery);
     if (!normalizedQuery) {
       setSearchError("请输入关键词");
@@ -588,12 +606,15 @@ export default function My9V3App({
       key: cacheKey,
       requestedAt: now,
     };
+    const controller = new AbortController();
+    const { signal } = controller;
+    searchAbortRef.current = controller;
     setSearchLoading(true);
     setSearchError("");
     setSearchActiveIndex(-1);
     setSearchCommittedQuery(normalizedQuery);
 
-    async function applySearchResponse(nextResponse: SubjectSearchResponse) {
+    function applySearchResponse(nextResponse: SubjectSearchResponse) {
       searchClientCacheRef.current.set(cacheKey, {
         expiresAt: Date.now() + SEARCH_CLIENT_CACHE_TTL_MS,
         response: nextResponse,
@@ -612,18 +633,21 @@ export default function My9V3App({
 
     try {
       const response = await fetch(
-        `/api/subjects/search?q=${encodeURIComponent(normalizedQuery)}&kind=${encodeURIComponent(kind)}`
+        `/api/subjects/search?q=${encodeURIComponent(normalizedQuery)}&kind=${encodeURIComponent(kind)}`,
+        { signal }
       );
       const json = (await response.json()) as Partial<SubjectSearchResponse> & {
         ok?: boolean;
         error?: string;
       };
+      if (signal.aborted) return;
 
       if (!response.ok || !json?.ok) {
         if (canUseItunesBrowserFallback(kind, json?.error)) {
-          const fallbackResponse = await searchItunesInBrowser(normalizedQuery, kind);
+          const fallbackResponse = await searchItunesInBrowser(normalizedQuery, kind, signal);
+          if (signal.aborted) return;
           if (fallbackResponse) {
-            await applySearchResponse(fallbackResponse);
+            applySearchResponse(fallbackResponse);
             return;
           }
         }
@@ -649,11 +673,13 @@ export default function My9V3App({
         noResultQuery: typeof json.noResultQuery === "string" ? json.noResultQuery : null,
       };
 
-      await applySearchResponse(nextResponse);
+      applySearchResponse(nextResponse);
     } catch {
-      const fallbackResponse = await searchItunesInBrowser(normalizedQuery, kind);
+      if (signal.aborted) return;
+      const fallbackResponse = await searchItunesInBrowser(normalizedQuery, kind, signal);
+      if (signal.aborted) return;
       if (fallbackResponse) {
-        await applySearchResponse(fallbackResponse);
+        applySearchResponse(fallbackResponse);
         return;
       }
 
@@ -661,7 +687,10 @@ export default function My9V3App({
       setSearchResults([]);
       setSearchMeta(createSearchMeta(normalizedQuery));
     } finally {
-      setSearchLoading(false);
+      if (searchAbortRef.current === controller) {
+        searchAbortRef.current = null;
+        if (!signal.aborted) setSearchLoading(false);
+      }
     }
   }
 
@@ -970,6 +999,7 @@ export default function My9V3App({
         onOpenChange={(open) => {
           setSearchOpen(open);
           if (!open) {
+            if (searchAbortRef.current) resetSearch();
             setSelectedSlot(null);
           }
         }}
@@ -977,11 +1007,10 @@ export default function My9V3App({
         onQueryChange={(value) => {
           setSearchQuery(value);
           setSearchError("");
-          setSearchActiveIndex(-1);
           if (value.trim().length === 0) {
-            setSearchResults([]);
-            setSearchCommittedQuery("");
-            setSearchMeta(createSearchMeta());
+            resetSearch();
+          } else {
+            setSearchActiveIndex(-1);
           }
         }}
         loading={searchLoading}
