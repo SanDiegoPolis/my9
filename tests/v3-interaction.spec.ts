@@ -1142,6 +1142,48 @@ test.describe("v3 interaction", () => {
     expect((imageBox?.y || 0) < (linkBox?.y || 0)).toBeTruthy();
   });
 
+  test("关闭自定义图片预览后丢弃尚未完成的导图", async ({ page }) => {
+    await page.goto("/custom");
+    await page.getByRole("button", { name: "我知道了" }).click();
+    await page.getByLabel("选择第 1 格作品").click();
+    await page.getByPlaceholder("搜索 Bangumi 条目").fill("bgm");
+    await page.getByRole("button", { name: "搜索", exact: true }).click();
+    await page.getByRole("button", { name: /Bangumi 作品/ }).click();
+    await page.getByRole("button", { name: "填入第 1 格" }).click();
+
+    await page.evaluate(() => {
+      const toBlob = HTMLCanvasElement.prototype.toBlob;
+      const createObjectURL = URL.createObjectURL;
+      let pendingPreview: Blob | null = null;
+      URL.createObjectURL = (blob) => {
+        if (blob === pendingPreview) document.body.dataset.closedPreviewPublished = "true";
+        return createObjectURL(blob);
+      };
+      HTMLCanvasElement.prototype.toBlob = function (callback, type, quality) {
+        if (this.width !== 1080 || this.height !== 1660) return toBlob.call(this, callback, type, quality);
+        window.addEventListener("finish-test-preview", () => {
+          toBlob.call(this, (blob) => {
+            pendingPreview = blob;
+            callback(blob);
+            setTimeout(() => { document.body.dataset.previewFinished = "true"; }, 0);
+          }, type, quality);
+        }, { once: true });
+        document.body.dataset.previewPending = "true";
+      };
+    });
+
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "还差 8 部可生成" }).click();
+    const body = page.locator("body");
+    await expect(body).toHaveAttribute("data-preview-pending", "true");
+    const preview = page.getByRole("dialog", { name: "生成图片" });
+    await preview.getByRole("button", { name: "Close" }).click();
+    await expect(preview).toBeHidden();
+    await page.evaluate(() => window.dispatchEvent(new Event("finish-test-preview")));
+    await expect(body).toHaveAttribute("data-preview-finished", "true");
+    await expect(body).not.toHaveAttribute("data-closed-preview-published", "true");
+  });
+
   test("自定义模式首次提示只出现一次并可测试保存图片", async ({ page }) => {
     await page.goto("/custom");
     await expect(page.getByRole("heading", { name: "使用须知" })).toBeVisible();
@@ -1248,48 +1290,6 @@ test.describe("v3 interaction", () => {
     expect(sizeInfo).not.toBeNull();
     expect(Math.abs((sizeInfo?.mediaWidth || 0) - (sizeInfo?.cropWidth || 0))).toBeLessThan(1.5);
     expect(Math.abs((sizeInfo?.mediaHeight || 0) - (sizeInfo?.cropHeight || 0))).toBeLessThan(1.5);
-  });
-
-  test("关闭自定义图片预览后丢弃尚未完成的导图", async ({ page }) => {
-    await page.goto("/custom");
-    await page.getByRole("button", { name: "我知道了" }).click();
-    await page.getByLabel("选择第 1 格作品").click();
-    await page.getByPlaceholder("搜索 Bangumi 条目").fill("bgm");
-    await page.getByRole("button", { name: "搜索", exact: true }).click();
-    await page.getByRole("button", { name: /Bangumi 作品/ }).click();
-    await page.getByRole("button", { name: "填入第 1 格" }).click();
-
-    await page.evaluate(() => {
-      const toBlob = HTMLCanvasElement.prototype.toBlob;
-      const createObjectURL = URL.createObjectURL;
-      let pendingPreview: Blob | null = null;
-      URL.createObjectURL = (blob) => {
-        if (blob === pendingPreview) document.body.dataset.closedPreviewPublished = "true";
-        return createObjectURL(blob);
-      };
-      HTMLCanvasElement.prototype.toBlob = function (callback, type, quality) {
-        if (this.width !== 1080 || this.height !== 1660) return toBlob.call(this, callback, type, quality);
-        window.addEventListener("finish-test-preview", () => {
-          toBlob.call(this, (blob) => {
-            pendingPreview = blob;
-            callback(blob);
-            setTimeout(() => { document.body.dataset.previewFinished = "true"; }, 0);
-          }, type, quality);
-        }, { once: true });
-        document.body.dataset.previewPending = "true";
-      };
-    });
-
-    page.once("dialog", (dialog) => dialog.accept());
-    await page.getByRole("button", { name: "还差 8 部可生成" }).click();
-    const body = page.locator("body");
-    await expect(body).toHaveAttribute("data-preview-pending", "true");
-    const preview = page.getByRole("dialog", { name: "生成图片" });
-    await preview.getByRole("button", { name: "Close" }).click();
-    await expect(preview).toBeHidden();
-    await page.evaluate(() => window.dispatchEvent(new Event("finish-test-preview")));
-    await expect(body).toHaveAttribute("data-preview-finished", "true");
-    await expect(body).not.toHaveAttribute("data-closed-preview-published", "true");
   });
 
   test("自定义模式支持单源搜索、上传裁切、本地草稿和直接导图", async ({ page }) => {
