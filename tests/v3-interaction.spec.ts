@@ -596,6 +596,47 @@ test.describe("v3 interaction", () => {
     await expect(page.locator("#search-results-list").getByText("塞尔达传说")).toBeVisible();
   });
 
+  test("关闭或清空普通搜索会取消未完成的请求", async ({ page }) => {
+    const aborted = new Set<string>();
+    const heldQuery = (url: URL) => {
+      const query = url.searchParams.get("q");
+      return url.pathname === "/api/subjects/search" && query?.startsWith("held-catalog-") ? query : null;
+    };
+    await page.route((url) => heldQuery(url) !== null, () => {
+      // Keep the request pending until the browser cancels it.
+    });
+    page.on("requestfailed", (request) => {
+      const query = heldQuery(new URL(request.url()));
+      if (query && request.failure()?.errorText === "net::ERR_ABORTED") aborted.add(query);
+    });
+
+    await page.goto("/game");
+    await page.getByLabel("选择第 1 格游戏").click();
+    const input = page.getByPlaceholder("输入游戏名");
+    await startHeldSearch("held-catalog-close");
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    await page.getByLabel("选择第 2 格游戏").click();
+    await expect(input).toBeEnabled();
+    await expect.poll(() => aborted.has("held-catalog-close")).toBe(true);
+    await input.fill("zelda");
+    await input.press("Enter");
+    await expect(page.locator("#search-results-list").getByText("塞尔达传说")).toBeVisible();
+
+    await startHeldSearch("held-catalog-clear");
+    await page.getByRole("button", { name: "清空搜索", exact: true }).click();
+    await expect(input).toBeEnabled();
+    await expect(input).toHaveValue("");
+    await expect.poll(() => aborted.has("held-catalog-clear")).toBe(true);
+
+    async function startHeldSearch(query: string) {
+      await input.fill(query);
+      const request = page.waitForRequest((value) => heldQuery(new URL(value.url())) === query);
+      await input.press("Enter");
+      await request;
+      await expect(input).toBeDisabled();
+    }
+  });
+
   test("搜索缓存可跨刷新命中 sessionStorage", async ({ page }) => {
     let searchRequestCount = 0;
     page.on("request", (request) => {
